@@ -1,0 +1,15 @@
+{
+  "name": "courtvision-contracts",
+  "version": "1.0.0",
+  "description": "CourtVision AI - Solidity contracts for NBA prediction markets on Polygon",
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "deploy:amoy": "hardhat run scripts/deploy-amoy.js --network amoy"
+  },
+  "devDependencies": {
+    "hardhat": "^2.22.0",
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "@openzeppelin/contracts": "^5.2.0"
+  }
+}
