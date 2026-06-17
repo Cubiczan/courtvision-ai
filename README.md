@@ -1,4 +1,4 @@
-# 🏀 CourtVision AI
+# CourtVision AI
 
 ## AI-Powered NBA Prediction Market on Polygon
 
