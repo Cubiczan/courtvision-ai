@@ -206,6 +206,88 @@ The platform includes pre-loaded data for the 2025 NBA Playoffs:
 
 ---
 
+## Decision Governance (CHP gate)
+
+Every market position / bet is routed through a runtime **CHP decision gate**
+before it is committed on-chain. This is the executable counterpart to the
+CHP governance docs in `.chp/` — the pattern is adapted from the Rust
+`swarmfi-executor` and `cleanmandate` policy engines.
+
+**Policy** lives in [`policy.yaml`](policy.yaml) at the repo root:
+
+| Field | Meaning |
+|-------|---------|
+| `max_notional_per_position` | Hard cap on a single position's notional |
+| `daily_cap` | Cumulative committed notional allowed per UTC day |
+| `hitl_threshold` | Positions at/above this notional need human approval |
+| `min_confidence`, `min_odds`, `max_odds` | Sanity/adversarial bounds |
+| `allowed_markets`, `allowed_chains`, `allowed_outcomes` | Allowlists |
+
+If `policy.yaml` is missing or malformed, the gate falls back to a **safe
+default policy** — the app is never left ungated (non-breaking).
+
+**State machine** (`src/courtvision/chp/gate.py`):
+
+```
+EXPLORING ──sanity check──▶ BLOCKED           (policy/sanity violation, not committed)
+          │
+          └──passes──▶ PROVISIONAL ─┬─ notional < hitl_threshold ─▶ LOCKED  (auto-committed)
+                                    └─ notional ≥ hitl_threshold ─▶ HITL_REQUIRED (awaits human)
+HITL_REQUIRED ──gate.approve()──▶ LOCKED       (committed after human approval)
+```
+
+Each decision emits a content-hashed **provenance record** (per-claim audit
+trail) appended to `CHPGate.ledger`.
+
+The gate is wired into `AzuroService.simulate_bet(...)`, which now refuses to
+mutate market liquidity unless the CHP gate returns `LOCKED`:
+
+```python
+from courtvision.services.azuro_service import AzuroService
+
+azuro = AzuroService()                       # loads policy.yaml (or safe default)
+azuro.create_market("G1", "A", "B", tipoff)
+
+# Under threshold -> auto-committed
+azuro.simulate_bet(1, "home_win", 100.0, confidence=0.8)   # committed=True, chp_state="locked"
+
+# Over threshold -> blocked pending human approval
+r = azuro.simulate_bet(1, "home_win", 400.0, confidence=0.8)  # hitl_required=True, committed=False
+# ...after a human approves:
+azuro.simulate_bet(1, "home_win", 400.0, confidence=0.8, chp_approved=True)  # committed=True
+```
+
+---
+
+## Offline / mock mode
+
+CourtVision AI runs — and its test suite passes — with **zero API keys**.
+Prediction data resolves through a three-tier fallback
+(`src/courtvision/services/data_access.py`), adapted from the
+`finance-cockpit` / `market-radar` `live -> cache -> mock` pattern:
+
+1. **Live** — call the Qwen LLM (Alibaba DashScope) when `DASHSCOPE_API_KEY` is set.
+2. **Cache** — return a fresh entry from the local on-disk prediction cache.
+3. **Mock** — return an embedded synthetic prediction (no network, no key).
+
+Offline/mock mode is used automatically when **no key is present**, or when any
+of these env flags is truthy: `COURTVISION_OFFLINE`, `COURTVISION_MOCK`,
+`OFFLINE`, `MOCK`.
+
+```bash
+# Run the whole test suite with no credentials:
+pytest
+
+# Force mock mode even if a key happens to be set:
+MOCK=1 uvicorn courtvision.api.main:app --port 8000
+```
+
+Every prediction dict carries a `source` field (`"live"` | `"cache"` | `"mock"`)
+so callers and tests can see which tier answered. `QwenClient` no longer raises
+at construction when a key is absent — it degrades to a heuristic fallback.
+
+---
+
 ## License
 
 MIT License — see [LICENSE](LICENSE) for details.

@@ -9,6 +9,7 @@ from typing import Any, Optional
 
 import httpx
 
+from courtvision.chp.gate import CHPGate, PositionRequest
 from courtvision.models.nba import Market, MarketStatus
 
 logger = logging.getLogger(__name__)
@@ -27,6 +28,7 @@ class AzuroService:
         core_address: Optional[str] = None,
         proxy_address: Optional[str] = None,
         rpc_url: Optional[str] = None,
+        chp_gate: Optional[CHPGate] = None,
     ) -> None:
         self.core_address = core_address or AZURO_CORE_ADDRESS
         self.proxy_address = proxy_address or AZURO_PROXY_ADDRESS
@@ -35,6 +37,8 @@ class AzuroService:
         )
         self._markets: dict[int, Market] = {}
         self._market_counter = 0
+        # CHP decision gate: every position/bet is gated before it is committed.
+        self.chp_gate = chp_gate or CHPGate()
 
         logger.info(
             "AzuroService initialized: chain_id=%d, core=%s, proxy=%s",
@@ -107,11 +111,60 @@ class AzuroService:
         )
         return True
 
-    def simulate_bet(self, market_id: int, outcome: str, amount: float) -> dict[str, Any]:
-        """Simulate placing a bet (demo mode)."""
+    def simulate_bet(
+        self,
+        market_id: int,
+        outcome: str,
+        amount: float,
+        confidence: float = 1.0,
+        user_address: str = "0x0000000000000000000000000000000000000000",
+        chp_approved: bool = False,
+    ) -> dict[str, Any]:
+        """Simulate placing a bet (demo mode), gated by the CHP decision gate.
+
+        Every position is evaluated by the CHP gate before it is committed:
+        - Below the HITL threshold and passing sanity checks -> committed (LOCKED).
+        - At/above the HITL threshold -> NOT committed; ``hitl_required`` is
+          returned so the caller can route it to a human approval queue and
+          re-call with ``chp_approved=True`` once approved.
+        - Any sanity/policy violation -> NOT committed; ``blocked`` is returned.
+        """
         market = self._markets.get(market_id)
         if not market:
             return {"error": "Market not found"}
+
+        # --- CHP gate: gate the position before committing anything ---
+        odds = market.home_odds if outcome == "home_win" else market.away_odds
+        request = PositionRequest(
+            market_id=market_id,
+            outcome=outcome,
+            notional=amount,
+            odds=odds,
+            confidence=confidence,
+            market_protocol=market.protocol,
+            chain="polygon-amoy",
+            user_address=user_address,
+        )
+        if chp_approved:
+            decision = self.chp_gate.approve(request)
+        else:
+            decision = self.chp_gate.evaluate(request)
+        if not decision.allowed:
+            logger.info(
+                "CHP gate did not authorize bet on market %d: %s (%s)",
+                market_id, decision.state.value, decision.reason,
+            )
+            return {
+                "market_id": market_id,
+                "outcome": outcome,
+                "amount": amount,
+                "chp_state": decision.state.value,
+                "committed": False,
+                "hitl_required": decision.requires_human,
+                "blocked": bool(decision.violations),
+                "reason": decision.reason,
+                "provenance": decision.provenance.to_dict(),
+            }
 
         if outcome == "home_win":
             odds = market.home_odds
@@ -140,6 +193,9 @@ class AzuroService:
             "new_home_odds": market.home_odds,
             "new_away_odds": market.away_odds,
             "total_liquidity": market.total_liquidity,
+            "committed": True,
+            "chp_state": decision.state.value,
+            "provenance": decision.provenance.to_dict(),
         }
 
     def get_market_stats(self) -> dict[str, Any]:

@@ -97,24 +97,34 @@ class QwenClient:
             "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
         )
 
-        # Initialize synchronous client
-        self.client = OpenAI(
-            api_key=self.api_key,
-            base_url=self.base_url,
-            timeout=30.0,
-        )
-
-        # Initialize async client
-        self.async_client = AsyncOpenAI(
-            api_key=self.api_key,
-            base_url=self.base_url,
-            timeout=30.0,
-        )
+        # Initialize OpenAI-compatible clients only when a key is present.
+        # Without a key the SDK raises at construction, which would break the
+        # whole app in offline/demo/CI mode. Leaving these as None lets the
+        # predict_* methods fall through to the heuristic fallback prediction.
+        self.client: Optional[OpenAI] = None
+        self.async_client: Optional[AsyncOpenAI] = None
+        if self.api_key:
+            try:
+                self.client = OpenAI(
+                    api_key=self.api_key,
+                    base_url=self.base_url,
+                    timeout=30.0,
+                )
+                self.async_client = AsyncOpenAI(
+                    api_key=self.api_key,
+                    base_url=self.base_url,
+                    timeout=30.0,
+                )
+            except Exception as e:  # noqa: BLE001 - never fail app startup on client init
+                logger.warning("Could not initialize DashScope clients: %s", e)
+        else:
+            logger.info("No DASHSCOPE_API_KEY set; QwenClient will use heuristic fallback")
 
         logger.info(
-            "QwenClient initialized: model=%s, base_url=%s",
+            "QwenClient initialized: model=%s, base_url=%s, live=%s",
             self.model,
             self.base_url,
+            self.client is not None,
         )
 
     def _build_prediction_messages(
@@ -176,6 +186,8 @@ class QwenClient:
             away_team, away_record, away_ppg, away_papg, away_net_rating, away_streak,
             context,
         )
+        if self.client is None:
+            return self._generate_fallback_prediction(messages)
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
@@ -212,6 +224,8 @@ class QwenClient:
             away_team, away_record, away_ppg, away_papg, away_net_rating, away_streak,
             context,
         )
+        if self.async_client is None:
+            return self._generate_fallback_prediction(messages)
         try:
             response = await self.async_client.chat.completions.create(
                 model=self.model,
@@ -322,6 +336,13 @@ class QwenClient:
 
     def health_check(self) -> dict[str, Any]:
         """Check if the LLM service is accessible."""
+        if self.client is None:
+            return {
+                "status": "offline",
+                "model": self.model,
+                "base_url": self.base_url,
+                "detail": "no DASHSCOPE_API_KEY; running in heuristic/offline mode",
+            }
         try:
             response = self.client.chat.completions.create(
                 model=self.model,

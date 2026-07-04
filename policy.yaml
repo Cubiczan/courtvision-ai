@@ -1,0 +1,42 @@
+# CourtVision AI - CHP Gate Policy
+# Governs every market position / bet before it is committed on-chain.
+# Conceptual pattern adapted from swarmfi-executor (policies/executor.yaml)
+# and cleanmandate (policies/mandate.yaml) CHP gates.
+#
+# If this file is missing or unreadable, gate.py falls back to a SAFE default
+# policy (see chp/gate.py :: Policy.default) so the app never runs ungated.
+
+version: "1.0"
+
+# --- Notional limits (denominated in the bet stake units, e.g. USDC) ---
+# A single position may not exceed this notional.
+max_notional_per_position: 500.0
+# Cumulative committed notional allowed per rolling day.
+daily_cap: 2500.0
+
+# --- Human-in-the-loop ---
+# Positions with notional >= hitl_threshold are BLOCKED pending explicit
+# human approval. Below the threshold they auto-lock (subject to sanity checks).
+hitl_threshold: 250.0
+
+# --- Sanity / adversarial-review bounds ---
+# Minimum model confidence (0-1) required to commit a position.
+min_confidence: 0.55
+# Reject bets on odds outside this band (guards against fat-finger / bad feed).
+min_odds: 1.01
+max_odds: 100.0
+
+# --- Allowlists ---
+# Prediction-market venues/protocols this agent may trade.
+allowed_markets:
+  - azuro
+# Chains the agent may commit positions on.
+allowed_chains:
+  - polygon-amoy
+  - polygon
+# Bet outcomes the gate will consider valid.
+allowed_outcomes:
+  - home_win
+  - away_win
+  - over
+  - under
